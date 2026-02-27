@@ -1,14 +1,5 @@
 import { test, expect } from '@playwright/test'
 
-// Helper: create a task via API directly to avoid UI flakiness in setup
-async function apiCreateTask(request, title, priority = 'med') {
-  const res = await request.post('http://localhost:8000/tasks', {
-    data: { title, priority },
-  })
-  return res.json()
-}
-
-// Helper: clear all tasks via API before each test
 async function clearTasks(request) {
   const incomplete = await (await request.get('http://localhost:8000/tasks')).json()
   const completed = await (await request.get('http://localhost:8000/tasks/completed')).json()
@@ -17,42 +8,73 @@ async function clearTasks(request) {
   }
 }
 
+async function apiCreateTask(request, title, priority = 'med') {
+  const res = await request.post('http://localhost:8000/tasks', {
+    data: { title, priority },
+  })
+  return res.json()
+}
+
+// Drag from one element to another using page.mouse (required for dnd-kit PointerSensor)
+async function dragElement(page, source, target) {
+  const srcBox = await source.boundingBox()
+  const tgtBox = await target.boundingBox()
+  const sx = srcBox.x + srcBox.width / 2
+  const sy = srcBox.y + srcBox.height / 2
+  const tx = tgtBox.x + tgtBox.width / 2
+  const ty = tgtBox.y + tgtBox.height / 2
+
+  await page.mouse.move(sx, sy)
+  await page.mouse.down()
+  // Move past the 5px activation threshold first
+  await page.mouse.move(sx, sy - 10, { steps: 5 })
+  // Then move to target with many steps for smooth simulation
+  await page.mouse.move(tx, ty, { steps: 30 })
+  await page.mouse.up()
+  // Give the reorder API call time to complete
+  await page.waitForTimeout(500)
+}
+
 test.beforeEach(async ({ request }) => {
   await clearTasks(request)
 })
 
 test('create a task and verify it appears in the list', async ({ page }) => {
   await page.goto('/')
-  await page.click('text=+ Add Task')
+  await page.getByRole('button', { name: '+ Add Task' }).click()
+
   await page.fill('input[name="title"]', 'Buy milk')
   await page.selectOption('select[name="priority"]', 'high')
-  await page.click('text=Add Task')
+  // Target the form's submit button specifically
+  await page.locator('button[type="submit"]').click()
 
   await expect(page.locator('text=Buy milk')).toBeVisible()
-  await expect(page.locator('.bg-red-100')).toBeVisible() // high priority badge
+  // High priority badge (bg-red-100 class)
+  await expect(page.locator('.bg-red-100').first()).toBeVisible()
 })
 
-test('reorder tasks via drag-and-drop and verify order persists after reload', async ({ page, request }) => {
-  await apiCreateTask(request, 'Task Alpha')
-  await apiCreateTask(request, 'Task Beta')
-  await apiCreateTask(request, 'Task Gamma')
-
+test('reorder tasks via drag-and-drop and verify order persists after reload', async ({ page }) => {
   await page.goto('/')
+
+  // Create 3 tasks via form so they appear in the UI immediately
+  for (const title of ['Task Alpha', 'Task Beta', 'Task Gamma']) {
+    await page.getByRole('button', { name: '+ Add Task' }).click()
+    await page.fill('input[name="title"]', title)
+    await page.locator('button[type="submit"]').click()
+    await expect(page.locator(`text=${title}`)).toBeVisible()
+  }
+
   // Verify initial order
-  const items = page.locator('.bg-white.rounded-lg.border')
-  await expect(items.first()).toContainText('Task Alpha')
+  const cards = page.locator('.bg-white.rounded-lg.border')
+  await expect(cards.first()).toContainText('Task Alpha')
 
-  // Drag Task Gamma (3rd) to the top
-  const source = items.nth(2)
-  const target = items.nth(0)
-  await source.dragTo(target)
+  // Drag the 3rd item's handle to the position of the 1st item's handle
+  const handles = page.locator('text=⠿')
+  await dragElement(page, handles.nth(2), handles.nth(0))
 
-  // Reload and verify order persisted
+  // Reload and verify Gamma is now first
   await page.reload()
-  const reloaded = page.locator('.bg-white.rounded-lg.border')
-  // After drag, Gamma should be near the top (positions updated via API)
-  const firstTitle = await reloaded.first().textContent()
-  expect(firstTitle).toContain('Task Gamma')
+  await expect(page.locator('.bg-white.rounded-lg.border').first()).toContainText('Task Gamma')
 })
 
 test('Focus Mode: complete a task and next batch loads', async ({ page, request }) => {
@@ -61,18 +83,19 @@ test('Focus Mode: complete a task and next batch loads', async ({ page, request 
   }
 
   await page.goto('/')
-  await page.click('text=Focus Mode')
+  await page.getByRole('button', { name: 'Focus Mode' }).click()
 
-  // Should show top 3 tasks
+  // Top 3 visible, 4th not
   await expect(page.locator('text=Focus Task 1')).toBeVisible()
   await expect(page.locator('text=Focus Task 2')).toBeVisible()
   await expect(page.locator('text=Focus Task 3')).toBeVisible()
   await expect(page.locator('text=Focus Task 4')).not.toBeVisible()
 
-  // Complete first task
-  await page.locator('text=Focus Task 1').locator('..').locator('..').locator('button:has-text("Done")').click()
+  // Click Done on the first task card
+  await page.locator('.bg-white.rounded-lg.border', { hasText: 'Focus Task 1' })
+    .getByRole('button', { name: 'Done' }).click()
 
-  // Task 4 should now appear
+  // Task 4 should now appear, Task 1 gone
   await expect(page.locator('text=Focus Task 4')).toBeVisible()
   await expect(page.locator('text=Focus Task 1')).not.toBeVisible()
 })
@@ -83,20 +106,21 @@ test('Focus Mode: defer a task and it moves to end', async ({ page, request }) =
   }
 
   await page.goto('/')
-  await page.click('text=Focus Mode')
+  await page.getByRole('button', { name: 'Focus Mode' }).click()
 
-  // Defer first task
-  await page.locator('text=Defer Task 1').locator('..').locator('..').locator('button:has-text("Defer")').click()
+  // Defer the first task
+  await page.locator('.bg-white.rounded-lg.border', { hasText: 'Defer Task 1' })
+    .getByRole('button', { name: 'Defer' }).click()
 
-  // Task 4 should now be visible (deferred task moved to end, task 4 enters batch)
-  await expect(page.locator('text=Defer Task 4')).toBeVisible()
-  // Task 1 should still exist but at the end — not in the top 3
+  // Task 4 enters batch; tasks 2 & 3 still there; task 1 is pushed to end (not in top 3)
   await expect(page.locator('text=Defer Task 2')).toBeVisible()
   await expect(page.locator('text=Defer Task 3')).toBeVisible()
+  await expect(page.locator('text=Defer Task 4')).toBeVisible()
+  await expect(page.locator('text=Defer Task 1')).not.toBeVisible()
 })
 
 test('all done state shows when no tasks remain', async ({ page }) => {
   await page.goto('/')
-  await page.click('text=Focus Mode')
+  await page.getByRole('button', { name: 'Focus Mode' }).click()
   await expect(page.locator('text=All done!')).toBeVisible()
 })
