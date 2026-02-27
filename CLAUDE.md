@@ -14,10 +14,20 @@ When the project is initialized, update this file with:
 ## Workflow Orchestration
 
 ### #1. Plan Mode Default
-- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
-- If something goes sideways, STOP and re-plan immediately - don't keep pushing
-- Use plan mode for verification steps, not just building
-- Write detailed specs upfront to prevent misunderstandings
+- Before writing or modifying code, always create a plan file in `plans/` with the format `plans/YYYY-MM-DD-<short-topic>.md`.
+- The plan file must include:
+  - Objective
+  - Scope (in/out)
+  - Affected files
+  - Step-by-step implementation
+  - Risks
+  - Test plan
+  - Rollback plan
+- After creating the plan, stop and wait for user approval before implementation.
+- After implementation, update the same plan file with execution notes and final results.
+- If something goes sideways, STOP and re-plan immediately - don't keep pushing.
+- Use plan mode for verification steps, not just building.
+- Write detailed specs upfront to prevent misunderstandings.
 
 ### #2. Subagent Strategy
 - Use subagents liberally to keep main context window clean
